@@ -22,9 +22,10 @@ namespace SkipTheBadEngine
         private float startThickness;
         private float endThickness;
         private float thickness;
+        private float nextThickness;
 
         private float progress;
-        private float vertexStep;
+        private float progressStep;
 
         private float lenght = 1000;
         private int updateDivisor = 1;
@@ -81,13 +82,17 @@ namespace SkipTheBadEngine
 
         private void FillJoint(Vector3[] quad, int count)
         {
+            var step = 1.0f / count;
+            var innerProgress = 0.0f;
             for (int i = 0; i < count; i++)
             {
                 var AA = (quad[1].Lerp(quad[2], (float)(i) / count)) - quad[3];
                 var BB = (quad[1].Lerp(quad[2], (float)(i + 1) / count)) - quad[3];
+                var innerThickness = Lerp(thickness, nextThickness, innerProgress);
+                innerProgress += step;
                 AddVertex(quad[0], jointDivisor);
-                AddVertex((AA.Normalized() * thickness) + quad[3], jointDivisor);
-                AddVertex((BB.Normalized() * thickness) + quad[3], jointDivisor);
+                AddVertex((AA.Normalized() * nextThickness) + quad[3], jointDivisor);
+                AddVertex((BB.Normalized() * nextThickness) + quad[3], jointDivisor);
             }
         }
 
@@ -95,13 +100,14 @@ namespace SkipTheBadEngine
         {
             var AB = triple[1] - triple[0];
             var BC = triple[2] - triple[1];
-            var orthogonalAB = (camera.GlobalTransform.origin - ((triple[0] + triple[1]) / 2)).Cross(AB).Normalized() * thickness;
-            var orthogonalBC = (camera.GlobalTransform.origin - ((triple[1] + triple[2]) / 2)).Cross(BC).Normalized() * thickness;
+            var orthogonalABStart = (camera.GlobalTransform.origin - ((triple[0] + triple[1]) / 2)).Cross(AB).Normalized() * thickness;
+            var orthogonalABEnd = (camera.GlobalTransform.origin - ((triple[0] + triple[1]) / 2)).Cross(AB).Normalized() * nextThickness;
+            var orthogonalBC = (camera.GlobalTransform.origin - ((triple[1] + triple[2]) / 2)).Cross(BC).Normalized() * nextThickness;
 
-            var upperA = last[0] != ZERO ? last[0] : triple[0] + orthogonalAB;
-            var lowerA = last[1] != ZERO ? last[1] : triple[0] - orthogonalAB;
-            var upperAB = triple[1] + orthogonalAB;
-            var lowerAB = triple[1] - orthogonalAB;
+            var upperA = last[0] != ZERO ? last[0] : triple[0] + orthogonalABStart;
+            var lowerA = last[1] != ZERO ? last[1] : triple[0] - orthogonalABStart;
+            var upperAB = triple[1] + orthogonalABEnd;
+            var lowerAB = triple[1] - orthogonalABEnd;
 
             var upperBC = triple[1] + orthogonalBC;
             var lowerBC = triple[1] - orthogonalBC;
@@ -160,8 +166,7 @@ namespace SkipTheBadEngine
             if (points.Length < 3)
                 return;
 
-            vertexStep = 1.0f / lenght;
-            lenght = 0;
+            progressStep = 1.0f / points.Length;
             progress = 0;
 
             imGeo.Clear();
@@ -169,7 +174,12 @@ namespace SkipTheBadEngine
             last[0] = last[1] = ZERO;
 
             for (int i = 1; i < points.Length - 1; i++)
+            {
+                thickness = Lerp(startThickness, endThickness, progress);
+                nextThickness = Lerp(startThickness, endThickness, progress + progressStep);
                 Joint(new Vector3[] { points[i - 1], points[i], points[i + 1] }, i, points.Length);
+                progress += progressStep;
+            }
 
             //var orthogonal = camera.GlobalTransform.origin - points[points.Length - 1].Cross(points[points.Length - 1] - points[points.Length - 2]).Normalized();
             //var left = points[points.Length - 1] - orthogonal;
@@ -208,10 +218,6 @@ namespace SkipTheBadEngine
 
         private void AddVertex(Vector3 vertex, int divisor = 0)
         {
-            divisor = (divisor > 0 ? divisor : 1);
-            lenght += (float)1 / divisor;
-            progress += vertexStep / divisor;
-            thickness = Lerp(startThickness, endThickness, progress);
             imGeo.SetColor(LerpColor(startColor, endColor, progress));
             imGeo.AddVertex(vertex);
         }
