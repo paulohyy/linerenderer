@@ -15,6 +15,9 @@ namespace SkipTheBadEngine
         private Camera camera;
         private Vector3[] last;
 
+        Vector3[] Up;
+        Vector3[] Low;
+
         private int cornerSmooth;
 
         private Color startColor;
@@ -28,128 +31,30 @@ namespace SkipTheBadEngine
         private float progress;
         private float progressStep;
 
-        public LineRenderer(Node node, Camera camera, int vertexSmoothCount = 3) // TODO: pick shader, pick color and thickness for each point
+        public LineRenderer(Node parent, Camera camera, int vertexSmoothCount, Shader shader)
         {
-            var shader = ResourceLoader.Load(@"Shaders/default.shader");
             mat = new ShaderMaterial();
-            mat.SetShader(shader as Shader);
+            mat.SetShader(shader != null ? shader : ResourceLoader.Load(@"Shaders/default.shader") as Shader);
 
             imGeo = new ImmediateGeometry();
             imGeo.SetCastShadowsSetting(GeometryInstance.ShadowCastingSetting.DoubleSided);
             imGeo.SetMaterialOverride(mat);
-            node.AddChild(imGeo);
+            parent.AddChild(imGeo);
 
             this.camera = camera;
             this.cornerSmooth = (vertexSmoothCount / 2);
 
             last = new Vector3[2];
+            Up = new Vector3[4];
+            Low = new Vector3[4];
 
             startThickness = endThickness = 0.1f;
         }
 
-        private void Corner(Vector3 center, Vector3 pivot)
-        {
-            const float PiStart = Mathf.PI * 1.5f;
-            const float PiEnd = Mathf.PI * 2.5f;
-            var axis = (center - camera.GlobalTransform.origin).Normalized();
-            var radius = (center - pivot).Normalized() * thickness;
-
-            var array = new Vector3[cornerSmooth + 1];
-
-            for (int i = 0; i < cornerSmooth + 1; i++)
-                array[i] = (center + radius.Rotated(axis, Lerp(PiStart, PiEnd, (float)(i) / cornerSmooth)));
-
-            for (int i = 1; i < cornerSmooth + 1; i++)
-            {
-                AddVertex(array[i - 1]);
-                AddVertex(array[i]);
-                AddVertex(center);
-            }
-            
-        }
-
-        private void FillJoint(Vector3[] quad, int count)
-        {
-            for (float i = 0; i < count; i++)
-            {
-                AddVertex(quad[0]);
-                AddVertex((((quad[1].Lerp(quad[2], i / count)) - quad[3]).Normalized() * nextThickness) + quad[3]);
-                AddVertex((((quad[1].Lerp(quad[2], (i + 1) / count)) - quad[3]).Normalized() * nextThickness) + quad[3]);
-            }
-        }
-
-        Vector3[] UP;
-        Vector3[] LOW;
-        private void Joint(Vector3[] triple, float i, int length, bool stop = false)
-        {
-            var AB = triple[1] - triple[0];
-            var BC = triple[2] - triple[1];
-            var orthogonalABStart = (camera.GlobalTransform.origin - ((triple[0] + triple[1]) / 2)).Cross(AB).Normalized() * thickness;
-            var orthogonalABEnd = (camera.GlobalTransform.origin - ((triple[0] + triple[1]) / 2)).Cross(AB).Normalized() * nextThickness;
-            var orthogonalBC = (camera.GlobalTransform.origin - ((triple[1] + triple[2]) / 2)).Cross(BC).Normalized() * nextThickness;
-
-            UP = new Vector3[4];
-            UP[LREnum.A] = last[0] != ZERO ? last[0] : triple[0] + orthogonalABStart;
-            UP[LREnum.AB] = triple[1] + orthogonalABEnd;
-            UP[LREnum.BC] = triple[1] + orthogonalBC;
-            UP[LREnum.C] = triple[2] + orthogonalBC;
-
-            LOW = new Vector3[4];
-            LOW[LREnum.A] = last[1] != ZERO ? last[1] : triple[0] - orthogonalABStart;
-            LOW[LREnum.AB] = triple[1] - orthogonalABEnd;
-            LOW[LREnum.BC] = triple[1] - orthogonalBC;
-            LOW[LREnum.C] = triple[2] - orthogonalBC;
-
-            var upperCross = Intersection(UP, out Vector3 upper, out float upperScore);
-            var lowerCross = Intersection(LOW, out Vector3 lower, out float lowerScore);
-            upperCross = upperCross && upperScore > lowerScore;
-            lowerCross = lowerCross && lowerScore > upperScore;
-            if (upperCross)
-            {
-                AddVertex(upper);
-                AddVertex(LOW[LREnum.A]);
-                AddVertex(UP[LREnum.A]);
-                AddVertex(LOW[LREnum.AB]);
-                AddVertex(LOW[LREnum.A]);
-                AddVertex(upper);
-                last[0] = upper;
-                last[1] = ZERO;
-                FillJoint(new Vector3[] { upper, LOW[LREnum.BC], LOW[LREnum.AB], triple[1] }, 5);
-            }
-            else if (lowerCross)
-            {
-                AddVertex(UP[LREnum.AB]);
-                AddVertex(LOW[LREnum.A]);
-                AddVertex(UP[LREnum.A]);
-                AddVertex(UP[LREnum.AB]);
-                AddVertex(lower);
-                AddVertex(LOW[LREnum.A]);
-                last[0] = ZERO;
-                last[1] = lower;
-                FillJoint(new Vector3[] { lower, UP[LREnum.AB], UP[LREnum.BC], triple[1] }, 5);
-            }
-            else
-            {
-                AddVertex(UP[LREnum.AB]);
-                AddVertex(LOW[LREnum.A]);
-                AddVertex(UP[LREnum.A]);
-                AddVertex(UP[LREnum.AB]);
-                AddVertex(LOW[LREnum.AB]);
-                AddVertex(LOW[LREnum.A]);
-                last[0] = ZERO;
-                last[1] = ZERO;
-                AddVertex(UP[LREnum.AB]);
-                AddVertex(UP[LREnum.BC]);
-                AddVertex(LOW[LREnum.AB]);
-                AddVertex(UP[LREnum.BC]);
-                AddVertex(LOW[LREnum.BC]);
-                AddVertex(LOW[LREnum.AB]);
-            }
-            i++;
-            if (i == length - 1 && !stop)
-                Joint(new Vector3[] { triple[1], triple[2], triple[2] + (triple[2] - triple[1]) }, i, length, true);
-        }
-
+        /// <summary>
+        /// Line should have at least 3 points.
+        /// </summary>
+        /// <param name="points"></param>
         public void Update(Vector3[] points)
         {
             if (points.Length < 3)
@@ -175,6 +80,149 @@ namespace SkipTheBadEngine
             Corner(points[points.Length - 1], points[points.Length - 2]);
 
             imGeo.End();
+        }
+
+        public void SimpleUpdate(Vector3 A, Vector3 B)
+        {
+            imGeo.Clear();
+            imGeo.Begin(Mesh.PrimitiveType.Triangles);
+
+            thickness = startThickness;
+            Corner(A, B);
+
+            var AB = B - A;
+            var orthogonalABStart = (camera.GlobalTransform.origin - ((A + B) / 2)).Cross(AB).Normalized() * startThickness;
+            var orthogonalABEnd = (camera.GlobalTransform.origin - ((A + B) / 2)).Cross(AB).Normalized() * endThickness;
+
+            Up[LREnum.A] = A + orthogonalABStart;
+            Up[LREnum.AB] = B + orthogonalABEnd;
+            Low[LREnum.A] = A - orthogonalABStart;
+            Low[LREnum.AB] = B - orthogonalABEnd;
+
+            AddVertex(Up[LREnum.A]);
+            AddVertex(Up[LREnum.AB]);
+            AddVertex(Low[LREnum.A]);
+            AddVertex(Up[LREnum.AB]);
+            AddVertex(Low[LREnum.AB]);
+            AddVertex(Low[LREnum.A]);
+
+            thickness = endThickness;
+            Corner(B, A);
+
+            imGeo.End();
+        }
+
+        private void Joint(Vector3[] triple, float i, int length)
+        {
+            var AB = triple[1] - triple[0];
+            var BC = triple[2] - triple[1];
+            var camToCenter = camera.GlobalTransform.origin - triple[1];
+            var orthogonalABStart = camToCenter.Cross(AB).Normalized() * thickness;
+            var orthogonalABEnd = camToCenter.Cross(AB).Normalized() * nextThickness;
+            var orthogonalBC = camToCenter.Cross(BC).Normalized() * nextThickness;
+
+            Up[LREnum.A] = last[0] != ZERO ? last[0] : triple[0] + orthogonalABStart;
+            Up[LREnum.AB] = triple[1] + orthogonalABEnd;
+            Up[LREnum.BC] = triple[1] + orthogonalBC;
+            Up[LREnum.C] = triple[2] + orthogonalBC;
+
+            Low[LREnum.A] = last[1] != ZERO ? last[1] : triple[0] - orthogonalABStart;
+            Low[LREnum.AB] = triple[1] - orthogonalABEnd;
+            Low[LREnum.BC] = triple[1] - orthogonalBC;
+            Low[LREnum.C] = triple[2] - orthogonalBC;
+
+            var upperCross = Intersection(Up, out Vector3 upper, out float upperScore);
+            var lowerCross = Intersection(Low, out Vector3 lower, out float lowerScore);
+            upperCross = upperCross && upperScore > lowerScore;
+            lowerCross = lowerCross && lowerScore > upperScore;
+            if (upperCross)
+            {
+                AddVertex(upper);
+                AddVertex(Low[LREnum.A]);
+                AddVertex(Up[LREnum.A]);
+                AddVertex(Low[LREnum.AB]);
+                AddVertex(Low[LREnum.A]);
+                AddVertex(upper);
+                last[0] = upper;
+                last[1] = ZERO;
+                FillJoint(new Vector3[] { upper, Low[LREnum.BC], Low[LREnum.AB], triple[1] }, 5);
+            }
+            else if (lowerCross)
+            {
+                AddVertex(Up[LREnum.AB]);
+                AddVertex(Low[LREnum.A]);
+                AddVertex(Up[LREnum.A]);
+                AddVertex(Up[LREnum.AB]);
+                AddVertex(lower);
+                AddVertex(Low[LREnum.A]);
+                last[0] = ZERO;
+                last[1] = lower;
+                FillJoint(new Vector3[] { lower, Up[LREnum.AB], Up[LREnum.BC], triple[1] }, 5);
+            }
+            else
+            {
+                AddVertex(Up[LREnum.AB]);
+                AddVertex(Low[LREnum.A]);
+                AddVertex(Up[LREnum.A]);
+                AddVertex(Up[LREnum.AB]);
+                AddVertex(Low[LREnum.AB]);
+                AddVertex(Low[LREnum.A]);
+                last[0] = ZERO;
+                last[1] = ZERO;
+                AddVertex(Up[LREnum.AB]);
+                AddVertex(Up[LREnum.BC]);
+                AddVertex(Low[LREnum.AB]);
+                AddVertex(Up[LREnum.BC]);
+                AddVertex(Low[LREnum.BC]);
+                AddVertex(Low[LREnum.AB]);
+            }
+            i++;
+            if (i == length - 1)
+                Joint(new Vector3[] { triple[1], triple[2], triple[2] + (triple[2] - triple[1]) }, i, length);
+        }
+
+        private void FillJoint(Vector3[] quad, int count)
+        {
+            for (float i = 0; i < count; i++)
+            {
+                AddVertex(quad[0]);
+                AddVertex((((quad[1].Lerp(quad[2], i / count)) - quad[3]).Normalized() * nextThickness) + quad[3]);
+                AddVertex((((quad[1].Lerp(quad[2], (i + 1) / count)) - quad[3]).Normalized() * nextThickness) + quad[3]);
+            }
+        }
+
+        const float start = 0.5f;
+        const float PiStart = Mathf.PI * start;
+        const float PiEnd = Mathf.PI * (start + 1);
+
+        public float test = 0;
+        public float angle = 0;
+
+        private void Corner(Vector3 center, Vector3 pivot)
+        {
+            var AB = center - pivot;
+            var orthogonal = (camera.GlobalTransform.origin - center).Cross(AB).Normalized() * thickness;
+            var perpendicular = center + orthogonal;
+
+            var axis = (center - camera.GlobalTransform.origin).Normalized();
+            var radius = (axis.Cross(perpendicular)).Normalized() * thickness;
+
+            var angleTo = axis.Cross(AB).AngleTo(perpendicular) % (Mathf.PI * 2);
+            angle = angleTo;
+
+            var array = new Vector3[cornerSmooth + 1];
+            array[0] = center + orthogonal;
+            array[cornerSmooth] = center - orthogonal;
+
+            for (int i = 1; i < cornerSmooth; i++)
+                array[i] = center + (radius.Rotated(axis, Lerp(angle + PiStart, angle + PiEnd, (float)(i) / cornerSmooth)));
+
+            for (int i = 1; i < cornerSmooth + 1; i++)
+            {
+                AddVertex(array[i - 1]);
+                AddVertex(array[i]);
+                AddVertex(center);
+            }
         }
 
         public void SetColors(Color start, Color end)
@@ -239,14 +287,14 @@ namespace SkipTheBadEngine
             return Mathf.Sqrt((vec.x * vec.x) + (vec.y * vec.y) + (vec.z * vec.z));
         }
 
-        #endregion
-    }
+        internal static class LREnum
+        {
+            public const short A = 0;
+            public const short AB = 1;
+            public const short BC = 2;
+            public const short C = 3;
+        }
 
-    internal static class LREnum
-    {
-        public const short A = 0;
-        public const short AB = 1;
-        public const short BC = 2;
-        public const short C = 3;
+        #endregion
     }
 }
