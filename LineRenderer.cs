@@ -1,24 +1,31 @@
 ﻿using Godot;
-using System;
 
 namespace SkipTheBadEngine
 {
     /// <summary>
-    /// Line renderer with meshes that always faces the camera
+    /// Simple line renderer with meshes that always faces the camera.
     /// </summary>
     public class LineRenderer
     {
-        Vector3 ZERO = new Vector3(0, 0, 0);
+        private static Vector3 ZERO = new Vector3(0, 0, 0);
 
-        private ImmediateGeometry imGeo;
-        private ShaderMaterial mat;
+        private ImmediateGeometry geometry;
+        private ShaderMaterial material;
         private Camera camera;
-        private Vector3[] last;
 
-        Vector3[] Up;
-        Vector3[] Low;
+        private Vector3[] Last;
+        private Vector3[] Up;
+        private Vector3[] Low;
+        private Vector3[] Variables;
+        private bool[] Crossed;
+
+        private float[] Score;
+
+        private float progress;
+        private float progressStep;
 
         private int cornerSmooth;
+        private int jointSmooth;
 
         private Color startColor;
         private Color endColor;
@@ -28,25 +35,30 @@ namespace SkipTheBadEngine
         private float thickness;
         private float nextThickness;
 
-        private float progress;
-        private float progressStep;
+        private Vector3[] Segments;
+        private float divisor;
 
-        public LineRenderer(Node parent, Camera camera, int vertexSmoothCount, Shader shader)
+        public LineRenderer(Node parent, Camera camera, int cornerSmooth, int jointSmooth, Shader shader)
         {
-            mat = new ShaderMaterial();
-            mat.SetShader(shader != null ? shader : ResourceLoader.Load(@"Shaders/default.shader") as Shader);
+            material = new ShaderMaterial();
+            material.SetShader(shader != null ? shader : ResourceLoader.Load(@"Shaders/default.shader") as Shader);
 
-            imGeo = new ImmediateGeometry();
-            imGeo.SetCastShadowsSetting(GeometryInstance.ShadowCastingSetting.DoubleSided);
-            imGeo.SetMaterialOverride(mat);
-            parent.AddChild(imGeo);
+            geometry = new ImmediateGeometry();
+            geometry.SetCastShadowsSetting(GeometryInstance.ShadowCastingSetting.DoubleSided);
+            geometry.SetMaterialOverride(material);
+            parent.AddChild(geometry);
 
             this.camera = camera;
-            this.cornerSmooth = (vertexSmoothCount / 2);
+            this.cornerSmooth = (cornerSmooth / 2);
+            this.jointSmooth = jointSmooth;
 
-            last = new Vector3[2];
+            Last = new Vector3[2];
             Up = new Vector3[4];
             Low = new Vector3[4];
+            Variables = new Vector3[6];
+            Crossed = new bool[2];
+            Score = new float[2];
+            Segments = new Vector3[2];
 
             startThickness = endThickness = 0.1f;
         }
@@ -54,7 +66,6 @@ namespace SkipTheBadEngine
         /// <summary>
         /// Line should have at least 3 points.
         /// </summary>
-        /// <param name="points"></param>
         public void Update(Vector3[] points)
         {
             if (points.Length < 3)
@@ -65,9 +76,9 @@ namespace SkipTheBadEngine
             thickness = Lerp(startThickness, endThickness, progress);
             nextThickness = Lerp(startThickness, endThickness, progress + progressStep);
 
-            imGeo.Clear();
-            imGeo.Begin(Mesh.PrimitiveType.Triangles);
-            last[0] = last[1] = ZERO;
+            geometry.Clear();
+            geometry.Begin(Mesh.PrimitiveType.Triangles);
+            Last[0] = Last[1] = ZERO;
 
             Corner(points[0], points[1]);
             for (int i = 1; i < points.Length - 1; i++)
@@ -79,13 +90,16 @@ namespace SkipTheBadEngine
             }
             Corner(points[points.Length - 1], points[points.Length - 2]);
 
-            imGeo.End();
+            geometry.End();
         }
 
+        /// <summary>
+        /// Use this if the line has only 2 points.
+        /// </summary>
         public void SimpleUpdate(Vector3 A, Vector3 B)
         {
-            imGeo.Clear();
-            imGeo.Begin(Mesh.PrimitiveType.Triangles);
+            geometry.Clear();
+            geometry.Begin(Mesh.PrimitiveType.Triangles);
 
             thickness = startThickness;
             Corner(A, B);
@@ -94,91 +108,93 @@ namespace SkipTheBadEngine
             var orthogonalABStart = (camera.GlobalTransform.origin - ((A + B) / 2)).Cross(AB).Normalized() * startThickness;
             var orthogonalABEnd = (camera.GlobalTransform.origin - ((A + B) / 2)).Cross(AB).Normalized() * endThickness;
 
-            Up[LREnum.A] = A + orthogonalABStart;
-            Up[LREnum.AB] = B + orthogonalABEnd;
-            Low[LREnum.A] = A - orthogonalABStart;
-            Low[LREnum.AB] = B - orthogonalABEnd;
+            Up[LR.A] = A + orthogonalABStart;
+            Up[LR.AB] = B + orthogonalABEnd;
+            Low[LR.A] = A - orthogonalABStart;
+            Low[LR.AB] = B - orthogonalABEnd;
 
-            AddVertex(Up[LREnum.A]);
-            AddVertex(Up[LREnum.AB]);
-            AddVertex(Low[LREnum.A]);
-            AddVertex(Up[LREnum.AB]);
-            AddVertex(Low[LREnum.AB]);
-            AddVertex(Low[LREnum.A]);
+            AddVertex(Up[LR.A]);
+            AddVertex(Up[LR.AB]);
+            AddVertex(Low[LR.A]);
+            AddVertex(Up[LR.AB]);
+            AddVertex(Low[LR.AB]);
+            AddVertex(Low[LR.A]);
 
             thickness = endThickness;
             Corner(B, A);
 
-            imGeo.End();
+            geometry.End();
         }
 
         private void Joint(Vector3[] triple, float i, int length)
         {
-            var AB = triple[1] - triple[0];
-            var BC = triple[2] - triple[1];
-            var camToCenter = camera.GlobalTransform.origin - triple[1];
-            var orthogonalABStart = camToCenter.Cross(AB).Normalized() * thickness;
-            var orthogonalABEnd = camToCenter.Cross(AB).Normalized() * nextThickness;
-            var orthogonalBC = camToCenter.Cross(BC).Normalized() * nextThickness;
+            Variables[LR.VarAB] = triple[1] - triple[0];
+            Variables[LR.VarBC] = triple[2] - triple[1];
+            Variables[LR.CamToCenter] = camera.GlobalTransform.origin - triple[1];
+            Variables[LR.OrthABStart] = Variables[LR.CamToCenter].Cross(Variables[LR.VarAB]).Normalized() * thickness;
+            Variables[LR.OrthABEnd] = Variables[LR.CamToCenter].Cross(Variables[LR.VarAB]).Normalized() * nextThickness;
+            Variables[LR.OrthBC] = Variables[LR.CamToCenter].Cross(Variables[LR.VarBC]).Normalized() * nextThickness;
 
-            Up[LREnum.A] = last[0] != ZERO ? last[0] : triple[0] + orthogonalABStart;
-            Up[LREnum.AB] = triple[1] + orthogonalABEnd;
-            Up[LREnum.BC] = triple[1] + orthogonalBC;
-            Up[LREnum.C] = triple[2] + orthogonalBC;
+            Up[LR.A] = Last[0] != ZERO ? Last[LR.Upper] : triple[LR.Left] + Variables[LR.OrthABStart];
+            Up[LR.AB] = triple[LR.Center] + Variables[LR.OrthABEnd];
+            Up[LR.BC] = triple[LR.Center] + Variables[LR.OrthBC];
+            Up[LR.C] = triple[LR.Right] + Variables[LR.OrthBC];
 
-            Low[LREnum.A] = last[1] != ZERO ? last[1] : triple[0] - orthogonalABStart;
-            Low[LREnum.AB] = triple[1] - orthogonalABEnd;
-            Low[LREnum.BC] = triple[1] - orthogonalBC;
-            Low[LREnum.C] = triple[2] - orthogonalBC;
+            Low[LR.A] = Last[1] != ZERO ? Last[LR.Lower] : triple[LR.Left] - Variables[LR.OrthABStart];
+            Low[LR.AB] = triple[LR.Center] - Variables[LR.OrthABEnd];
+            Low[LR.BC] = triple[LR.Center] - Variables[LR.OrthBC];
+            Low[LR.C] = triple[LR.Right] - Variables[LR.OrthBC];
 
-            var upperCross = Intersection(Up, out Vector3 upper, out float upperScore);
-            var lowerCross = Intersection(Low, out Vector3 lower, out float lowerScore);
-            upperCross = upperCross && upperScore > lowerScore;
-            lowerCross = lowerCross && lowerScore > upperScore;
-            if (upperCross)
+            Crossed[LR.Upper] = Intersection(Up, out Vector3 upper, out Score[LR.Upper]);
+            Crossed[LR.Lower] = Intersection(Low, out Vector3 lower, out Score[LR.Lower]);
+            Crossed[LR.Upper] = Crossed[LR.Upper] && Score[LR.Upper] > Score[LR.Lower];
+            Crossed[LR.Lower] = Crossed[LR.Lower] && Score[LR.Lower] > Score[LR.Upper];
+
+            if (Crossed[LR.Upper])
             {
                 AddVertex(upper);
-                AddVertex(Low[LREnum.A]);
-                AddVertex(Up[LREnum.A]);
-                AddVertex(Low[LREnum.AB]);
-                AddVertex(Low[LREnum.A]);
+                AddVertex(Low[LR.A]);
+                AddVertex(Up[LR.A]);
+                AddVertex(Low[LR.AB]);
+                AddVertex(Low[LR.A]);
                 AddVertex(upper);
-                last[0] = upper;
-                last[1] = ZERO;
-                FillJoint(new Vector3[] { upper, Low[LREnum.BC], Low[LREnum.AB], triple[1] }, 5);
+                Last[0] = upper;
+                Last[1] = ZERO;
+                FillJoint(new Vector3[] { upper, Low[LR.BC], Low[LR.AB], triple[1] }, jointSmooth);
             }
-            else if (lowerCross)
+            else if (Crossed[LR.Lower])
             {
-                AddVertex(Up[LREnum.AB]);
-                AddVertex(Low[LREnum.A]);
-                AddVertex(Up[LREnum.A]);
-                AddVertex(Up[LREnum.AB]);
+                AddVertex(Up[LR.AB]);
+                AddVertex(Low[LR.A]);
+                AddVertex(Up[LR.A]);
+                AddVertex(Up[LR.AB]);
                 AddVertex(lower);
-                AddVertex(Low[LREnum.A]);
-                last[0] = ZERO;
-                last[1] = lower;
-                FillJoint(new Vector3[] { lower, Up[LREnum.AB], Up[LREnum.BC], triple[1] }, 5);
+                AddVertex(Low[LR.A]);
+                Last[0] = ZERO;
+                Last[1] = lower;
+                FillJoint(new Vector3[] { lower, Up[LR.AB], Up[LR.BC], triple[1] }, jointSmooth);
             }
             else
             {
-                AddVertex(Up[LREnum.AB]);
-                AddVertex(Low[LREnum.A]);
-                AddVertex(Up[LREnum.A]);
-                AddVertex(Up[LREnum.AB]);
-                AddVertex(Low[LREnum.AB]);
-                AddVertex(Low[LREnum.A]);
-                last[0] = ZERO;
-                last[1] = ZERO;
-                AddVertex(Up[LREnum.AB]);
-                AddVertex(Up[LREnum.BC]);
-                AddVertex(Low[LREnum.AB]);
-                AddVertex(Up[LREnum.BC]);
-                AddVertex(Low[LREnum.BC]);
-                AddVertex(Low[LREnum.AB]);
+                AddVertex(Up[LR.AB]);
+                AddVertex(Low[LR.A]);
+                AddVertex(Up[LR.A]);
+                AddVertex(Up[LR.AB]);
+                AddVertex(Low[LR.AB]);
+                AddVertex(Low[LR.A]);
+                Last[0] = ZERO;
+                Last[1] = ZERO;
+                AddVertex(Up[LR.AB]);
+                AddVertex(Up[LR.BC]);
+                AddVertex(Low[LR.AB]);
+                AddVertex(Up[LR.BC]);
+                AddVertex(Low[LR.BC]);
+                AddVertex(Low[LR.AB]);
             }
+
             i++;
             if (i == length - 1)
-                Joint(new Vector3[] { triple[1], triple[2], triple[2] + (triple[2] - triple[1]) }, i, length);
+                Joint(new Vector3[] { triple[LR.Center], triple[LR.Right], triple[LR.Right] + (triple[LR.Right] - triple[LR.Center]) }, i, length);
         }
 
         private void FillJoint(Vector3[] quad, int count)
@@ -191,31 +207,21 @@ namespace SkipTheBadEngine
             }
         }
 
-        const float start = 0.5f;
-        const float PiStart = Mathf.PI * start;
-        const float PiEnd = Mathf.PI * (start + 1);
-
-        public float test = 0;
-        public float angle = 0;
-
         private void Corner(Vector3 center, Vector3 pivot)
         {
-            var AB = center - pivot;
-            var orthogonal = (camera.GlobalTransform.origin - center).Cross(AB).Normalized() * thickness;
-            var perpendicular = center + orthogonal;
+            var orthogonal =
+                (camera.GlobalTransform.origin - center)
+                .Cross(center - pivot)
+                .Normalized() * thickness;
 
             var axis = (center - camera.GlobalTransform.origin).Normalized();
-            var radius = (axis.Cross(perpendicular)).Normalized() * thickness;
-
-            var angleTo = axis.Cross(AB).AngleTo(perpendicular) % (Mathf.PI * 2);
-            angle = angleTo;
 
             var array = new Vector3[cornerSmooth + 1];
             array[0] = center + orthogonal;
             array[cornerSmooth] = center - orthogonal;
 
             for (int i = 1; i < cornerSmooth; i++)
-                array[i] = center + (radius.Rotated(axis, Lerp(angle + PiStart, angle + PiEnd, (float)(i) / cornerSmooth)));
+                array[i] = center + (orthogonal.Rotated(axis, Lerp(0, Mathf.PI, (float)(i) / cornerSmooth)));
 
             for (int i = 1; i < cornerSmooth + 1; i++)
             {
@@ -239,31 +245,31 @@ namespace SkipTheBadEngine
 
         private void AddVertex(Vector3 vertex)
         {
-            imGeo.SetColor(LerpColor(startColor, endColor, progress));
-            imGeo.AddVertex(vertex);
+            geometry.SetColor(LerpColor(startColor, endColor, progress));
+            geometry.AddVertex(vertex);
         }
 
         #region Utilities
 
         bool Intersection(Vector3[] p, out Vector3 intersection, out float absDiv)
         {
-            Vector3 cd = p[3] - p[2];
-            Vector3 ab = p[1] - p[0];
-            float div = cd.y * ab.x - cd.x * ab.y;
-            absDiv = Mathf.Abs(div);
+            Segments[LR.CtoD] = p[3] - p[2];
+            Segments[LR.AtoB] = p[1] - p[0];
+            divisor = Segments[LR.CtoD].y * Segments[LR.AtoB].x - Segments[LR.CtoD].x * Segments[LR.AtoB].y;
+            absDiv = Mathf.Abs(divisor);
 
             if (absDiv > 0.0001f)
             {
-                float ua = (cd.x * (p[0].y - p[2].y) - cd.y * (p[0].x - p[2].x)) / div;
-                float ub = (ab.x * (p[0].y - p[2].y) - ab.y * (p[0].x - p[2].x)) / div;
+                float ua = (Segments[LR.CtoD].x * (p[0].y - p[2].y) - Segments[LR.CtoD].y * (p[0].x - p[2].x)) / divisor;
+                float ub = (Segments[LR.AtoB].x * (p[0].y - p[2].y) - Segments[LR.AtoB].y * (p[0].x - p[2].x)) / divisor;
 
                 if (ua >= 0.0f && ua <= 1.0f && ub >= 0.0f && ub <= 1.0f)
                 {
-                    intersection = p[0] + ua * ab;
+                    intersection = p[0] + ua * Segments[LR.AtoB];
                     return true;
                 }
             }
-            intersection = new Vector3(0, 0, 0);
+            intersection = ZERO;
             return false;
         }
 
@@ -287,12 +293,29 @@ namespace SkipTheBadEngine
             return Mathf.Sqrt((vec.x * vec.x) + (vec.y * vec.y) + (vec.z * vec.z));
         }
 
-        internal static class LREnum
+        internal static class LR
         {
             public const short A = 0;
             public const short AB = 1;
             public const short BC = 2;
             public const short C = 3;
+
+            public const short VarAB = 0;
+            public const short VarBC = 1;
+            public const short CamToCenter = 2;
+            public const short OrthABStart = 3;
+            public const short OrthABEnd = 4;
+            public const short OrthBC = 5;
+
+            public const short Left = 0;
+            public const short Center = 1;
+            public const short Right = 2;
+
+            public const short Upper = 0;
+            public const short Lower = 0;
+
+            public const short AtoB = 0;
+            public const short CtoD = 1;
         }
 
         #endregion
